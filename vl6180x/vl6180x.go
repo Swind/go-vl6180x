@@ -1,11 +1,7 @@
 package vl6180x
 
 import (
-	"bytes"
-	"encoding/binary"
 	"time"
-
-	i2c "github.com/d2r2/go-i2c"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -65,47 +61,50 @@ const (
 
 type Vl6180x struct {
 	i2cAddr   uint8
-	i2cDevice *i2c.I2C
+	i2cDevice *I2C
 	ioTimeout time.Duration
 }
 
-func NewVl6180x(i2cAddr uint8) *Vl6180x {
+func NewVl6180x(i2cAddr uint8, bus int) (*Vl6180x, error) {
 	v := &Vl6180x{}
 	v.i2cAddr = i2cAddr
 
-	i2cDevice, err := i2c.NewI2C(0x29, 0)
+	i2cDevice, err := NewI2C(v.i2cAddr, bus)
 	if err != nil {
 		log.Fatal(err)
 	}
 	v.i2cDevice = i2cDevice
 
-	// Check model id
-	modelId, err := v.i2cDevice.ReadRegU8(VL6180X_REG_IDENTIFICATION_MODEL_ID)
+	return v, nil
+}
+
+func (v *Vl6180x) ReadByte(reg uint16) byte {
+	data, _, err := v.i2cDevice.ReadRegBytes(reg, 1)
 	if err != nil {
+		log.Error("Can't read byte from %x", reg)
 		log.Fatal(err)
-	}
-	if modelId != 0xB4 {
-		log.Error("The model id is %x not 0xB4", modelId)
-		return nil
+		return 0x00
 	}
 
-	return v
+	return data[0]
 }
 
-func (v *Vl6180x) Config(i2c *i2c.I2C) {
+func (v *Vl6180x) ReadBytes(reg uint16, n int) []byte {
+	buf, _, err := v.i2cDevice.ReadRegBytes(reg, n)
+	if err != nil {
+		log.Error("Can't read reg %x", reg)
+		return []byte{}
+	}
 
+	return buf
 }
 
-func (v *Vl6180x) WriteByte(reg uint16, value byte) error {
-	return v.Write(reg, []byte{value})
+func (v *Vl6180x) WriteU8(reg uint16, value uint8) error {
+	return v.i2cDevice.WriteRegU8(reg, value)
 }
 
-func (v *Vl6180x) Write(reg uint16, value []byte) error {
-	bytesBuffer := new(bytes.Buffer)
-	binary.Write(bytesBuffer, binary.LittleEndian, reg)
-	binary.Write(bytesBuffer, binary.LittleEndian, value)
-
-	_, err := v.i2cDevice.WriteBytes(bytesBuffer.Bytes())
+func (v *Vl6180x) WriteU16(reg uint16, value uint16) error {
+	err := v.i2cDevice.WriteRegU16(reg, value)
 	if err != nil {
 		return err
 	}
@@ -114,138 +113,133 @@ func (v *Vl6180x) Write(reg uint16, value []byte) error {
 	return nil
 }
 
-func (v *Vl6180x) loadSettings() {
-	log.Info("Loading vl6180x settings")
+func (v *Vl6180x) LoadSettings() {
 
-	//v.WriteByte(0x0207, 0x01)
-	// private settings from page 24 of app note
-	v.WriteByte(0x0207, 0x01)
-	v.WriteByte(0x0208, 0x01)
-	v.WriteByte(0x0096, 0x00)
-	v.WriteByte(0x0097, 0xfd)
-	v.WriteByte(0x00e3, 0x00)
-	v.WriteByte(0x00e4, 0x04)
-	v.WriteByte(0x00e5, 0x02)
-	v.WriteByte(0x00e6, 0x01)
-	v.WriteByte(0x00e7, 0x03)
-	v.WriteByte(0x00f5, 0x02)
-	v.WriteByte(0x00d9, 0x05)
-	v.WriteByte(0x00db, 0xce)
-	v.WriteByte(0x00dc, 0x03)
-	v.WriteByte(0x00dd, 0xf8)
-	v.WriteByte(0x009f, 0x00)
-	v.WriteByte(0x00a3, 0x3c)
-	v.WriteByte(0x00b7, 0x00)
-	v.WriteByte(0x00bb, 0x3c)
-	v.WriteByte(0x00b2, 0x09)
-	v.WriteByte(0x00ca, 0x09)
-	v.WriteByte(0x0198, 0x01)
-	v.WriteByte(0x01b0, 0x17)
-	v.WriteByte(0x01ad, 0x00)
-	v.WriteByte(0x00ff, 0x05)
-	v.WriteByte(0x0100, 0x05)
-	v.WriteByte(0x0199, 0x05)
-	v.WriteByte(0x01a6, 0x1b)
-	v.WriteByte(0x01ac, 0x3e)
-	v.WriteByte(0x01a7, 0x1f)
-	v.WriteByte(0x0030, 0x00)
+	setup := v.ReadByte(VL6180X_REG_SYSTEM_FRESH_OUT_OF_RESET)
 
-	// Recommended : Public registers - See data sheet for more detail
-	v.WriteByte(0x0011, 0x10) // Enables polling for 'New Sample ready'
-	// when measurement completes
-	v.WriteByte(0x010a, 0x30) // Set the averaging sample period
-	// (compromise between lower noise and
-	// increased execution time)
-	v.WriteByte(0x003f, 0x46) // Sets the light and dark gain (upper
-	// nibble). Dark gain should not be
-	// changed.
-	v.WriteByte(0x0031, 0xFF) // sets the # of range measurements after
-	// which auto calibration of system is
-	// performed
-	v.WriteByte(0x0040, 0x63) // Set ALS integration time to 100ms
-	v.WriteByte(0x002e, 0x01) // perform a single temperature calibration
-	// of the ranging sensor
+	if setup == 1 {
+		log.Debug("Loading vl6180x settings")
+		// private settings from page 24 of app note
+		v.WriteU8(0x0207, 0x01)
+		v.WriteU8(0x0208, 0x01)
+		v.WriteU8(0x0096, 0x00)
+		v.WriteU8(0x0097, 0xfd)
+		v.WriteU8(0x00e3, 0x00)
+		v.WriteU8(0x00e4, 0x04)
+		v.WriteU8(0x00e5, 0x02)
+		v.WriteU8(0x00e6, 0x01)
+		v.WriteU8(0x00e7, 0x03)
+		v.WriteU8(0x00f5, 0x02)
+		v.WriteU8(0x00d9, 0x05)
+		v.WriteU8(0x00db, 0xce)
+		v.WriteU8(0x00dc, 0x03)
+		v.WriteU8(0x00dd, 0xf8)
+		v.WriteU8(0x009f, 0x00)
+		v.WriteU8(0x00a3, 0x3c)
+		v.WriteU8(0x00b7, 0x00)
+		v.WriteU8(0x00bb, 0x3c)
+		v.WriteU8(0x00b2, 0x09)
+		v.WriteU8(0x00ca, 0x09)
+		v.WriteU8(0x0198, 0x01)
+		v.WriteU8(0x01b0, 0x17)
+		v.WriteU8(0x01ad, 0x00)
+		v.WriteU8(0x00ff, 0x05)
+		v.WriteU8(0x0100, 0x05)
+		v.WriteU8(0x0199, 0x05)
+		v.WriteU8(0x01a6, 0x1b)
+		v.WriteU8(0x01ac, 0x3e)
+		v.WriteU8(0x01a7, 0x1f)
+		v.WriteU8(0x0030, 0x00)
 
-	// Optional: Public registers - See data sheet for more detail
-	v.WriteByte(0x001b, 0x09) // Set default ranging inter-measurement
-	// period to 100ms
-	v.WriteByte(0x003e, 0x31) // Set default ALS inter-measurement period
-	// to 500ms
-	v.WriteByte(0x0014, 0x24) // Configures interrupt on 'New Sample
-	// Ready threshold event'
-}
+		// Recommended : Public registers - See data sheet for more detail
+		v.WriteU8(0x0011, 0x10) // Enables polling for 'New Sample ready'
+		// when measurement completes
+		v.WriteU8(0x010a, 0x30) // Set the averaging sample period
+		// (compromise between lower noise and
+		// increased execution time)
+		v.WriteU8(0x003f, 0x46) // Sets the light and dark gain (upper
+		// nibble). Dark gain should not be
+		// changed.
+		v.WriteU8(0x0031, 0xFF) // sets the # of range measurements after
+		// which auto calibration of system is
+		// performed
+		v.WriteU8(0x0040, 0x63) // Set ALS integration time to 100ms
+		v.WriteU8(0x002e, 0x01) // perform a single temperature calibration
+		// of the ranging sensor
 
-func (v *Vl6180x) ReadByte(reg uint8) byte {
-	data, err := v.i2cDevice.ReadRegU8(reg)
-	if err != nil {
-		log.Error("Can't read byte from %x", reg)
-		log.Fatal(err)
-		return 0x00
+		// Optional: Public registers - See data sheet for more detail
+		v.WriteU8(0x001b, 0x09) // Set default ranging inter-measurement
+		// period to 100ms
+		v.WriteU8(0x003e, 0x31) // Set default ALS inter-measurement period
+		// to 500ms
+		v.WriteU8(0x0014, 0x24) //
+
+		v.WriteU8(VL6180X_REG_SYSTEM_FRESH_OUT_OF_RESET, 0x00)
 	}
 
-	return data
+	v.SetScaling(1)
+	return
 }
 
-func (v *Vl6180x) ReadBytes(reg uint8, n int) []byte {
-	buf, c, err := v.i2cDevice.ReadRegBytes(reg, n)
-	if err != nil {
-		log.Error("Can't read reg %x", reg)
-		return []byte{}
+func (v *Vl6180x) StartRange() {
+	// VL6180X_REG_SYSRANGE_START
+	log.Debug("Start Range")
+	v.WriteU8(0x018, 0x01)
+}
+
+func (v *Vl6180x) PollRange() {
+	// wait for new measurement ready status
+	/*
+		for v.ReadRangeStatus() != 0x04 {
+			log.Debug("Wait until the range status is 0x04 now is %x", v.ReadRangeStatus())
+		}
+	*/
+
+	log.Debug("Polling range status")
+	var status byte
+	var rangeStatus byte
+
+	for rangeStatus != 0x04 {
+		status = v.ReadByte(0x04f)
+		rangeStatus = status & 0x07
 	}
 }
 
-func (v *Vl6180x) ReadRangeStatus() uint8 {
-	return (v.ReadByte(VL6180X_REG_RESULT_RANGE_STATUS) >> 4)
+func (v *Vl6180x) ClearInterrupt() {
+	// VL6180X_REG_SYSTEM_INTERRUPT_CLEAR
+	log.Debug("Clear interrupt")
+	v.WriteU8(0x015, 0x07)
 }
 
-func (v *Vl6180x) ReadLux(gain uint8) {
-	var reg byte = 0
-
-	reg = v.ReadByte(VL6180X_REG_SYSTEM_INTERRUPT_CONFIG)
-	reg = reg & ^byte(0x38)
-	reg = reg | (0x04 << 3) // IRQ on ALS ready
-
-	v.WriteByte(VL6180X_REG_SYSTEM_INTERRUPT_CONFIG, reg)
-
-	// 100 ms integration period
-	v.WriteByte(VL6180X_REG_SYSALS_INTEGRATION_PERIOD_HI, 0)
-	v.WriteByte(VL6180X_REG_SYSALS_INTEGRATION_PERIOD_LO, 100)
-
-	// analog gain
-	if gain > VL6180X_ALS_GAIN_40 {
-		gain = VL6180X_ALS_GAIN_40
-	}
-	v.WriteByte(VL6180X_REG_SYSALS_ANALOGUE_GAIN, 0x40|gain)
-
-	// start ALS
-	v.WriteByte(VL6180X_REG_SYSALS_START, 0x01)
-
-	// Poll until "New Sample Ready threshold event" is set
-	for ((v.ReadByte(VL6180X_REG_RESULT_INTERRUPT_STATUS_GPIO) >> 3) & 0x07) != 4 {
-		log.Debug("Poll until 'New Sample Ready threshold event' is set")
+func (v *Vl6180x) SetScaling(newScaling int) {
+	scalerValues := []uint16{0, 253, 127, 84}
+	defaultCrosstalkValidHeight := 20
+	if newScaling < 1 || newScaling > 3 {
+		log.Warning("Can't set scaling to %d", newScaling)
+		return
 	}
 
+	ptpOffset := v.ReadByte(0x24)
+
+	v.WriteU16(0x96, scalerValues[newScaling])
+	v.WriteU8(0x24, byte(int(ptpOffset)/newScaling))
+	v.WriteU8(0x21, byte(defaultCrosstalkValidHeight/newScaling))
+	rce := v.ReadByte(0x2d)
+	if newScaling == 1 {
+		v.WriteU8(0x23, byte((rce&0xFE)|1))
+	} else {
+		v.WriteU8(0x23, byte(rce&0xFE))
+	}
 }
 
 func (v *Vl6180x) ReadRange() uint8 {
-	for (v.ReadByte(VL6180X_REG_RESULT_RANGE_STATUS) & 0x01) == 0 {
-		log.Debug("Device is not ready to read the range")
-	}
+	v.StartRange()
+	v.PollRange()
+	result := v.ReadByte(0x063)
 
-	v.WriteByte(VL6180X_REG_SYSRANGE_START, 0x01)
+	v.ClearInterrupt()
 
-	// Poll until bit 2 is set
-	for (v.ReadByte(VL6180X_REG_RESULT_INTERRUPT_STATUS_GPIO) & 0x04) == 0 {
-		log.Debug("Poll until the interrupt status is 0x04")
-	}
-
-	// Read range in mm
-	result := v.ReadByte(VL6180X_REG_RESULT_RANGE_VAL)
-
-	// Clear interrupt
-	v.WriteByte(VL6180X_REG_SYSTEM_INTERRUPT_CLEAR, 0x07)
-
-	return result
+	return uint8(result)
 }
 
 func (v *Vl6180x) Close() {
@@ -256,7 +250,7 @@ func (v *Vl6180x) setTimeout(timeout time.Duration) {
 	v.ioTimeout = timeout
 }
 
-func (v *Vl6180x) Init(i2c *i2c.I2C) error {
+func (v *Vl6180x) Init(i2c *I2C) error {
 	v.setTimeout(time.Millisecond * 1000)
 
 	return nil
